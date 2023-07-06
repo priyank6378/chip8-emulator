@@ -3,6 +3,14 @@
 #include <cstring>
 #include <cstdlib>
 #include <thread>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
+#include <SDL2/SDL_timer.h>
+
+#define WIDTH   32
+#define HEIGHT  64
+#define SCALE   20
+#define FPS     100
 
 typedef unsigned char BYTE;
 typedef unsigned short WORD;
@@ -16,6 +24,24 @@ WORD m_AddressI ; // 16-bit address register I
 WORD m_ProgramCounter ; // 16-bit program counter
 std::vector<WORD> m_stack ; // the 16-bit stack
 BYTE m_ScreenData[64][32] ; // 64x32 is the screen size
+bool m_KeysPressed[16];     // specifies if the key is pressed
+BYTE m_DelayTimer ; // 8-bit delay timer
+BYTE m_SoundTimer ; // 8-bit sound timer
+
+bool ProgramRunning = true;
+
+BYTE m_keyMappings[16] = {
+    'x' , '1' , '2' , '3' ,
+    'q' , 'w' , 'e' , 'a' ,
+    's' , 'd' , 'z' , 'c' ,
+    '4' , 'r' , 'f' , 'v'
+};
+
+
+// SDL stuff
+SDL_Window* window;
+SDL_Surface* screenSurface;
+SDL_Event e;
 
 
 /*
@@ -39,7 +65,8 @@ void Opcode00E0(WORD opcode){
 
 // Returns from a subroutine.
 void Opcode00EE(WORD opcode){
-    ;
+    m_ProgramCounter = m_stack[m_stack.size()-1];
+    m_stack.pop_back();
 }
 
 // Jumps to address NNN.
@@ -56,8 +83,9 @@ void Opcode2NNN(WORD opcode){
 // Skips the next instruction if VX equals NN (usually the next instruction is a jump to skip a code block).
 void Opcode3XNN(WORD opcode){
     int x = opcode & 0xF00;
+    x >>= 8;
     int nn = opcode & 0x0FF;
-    if (x == nn) m_ProgramCounter+=2;
+    if (m_Registers[x] == nn) m_ProgramCounter+=2;
 }
 
 // Skips the next instruction if VX does not equal NN (usually the next instruction is a jump to skip a code block).
@@ -112,10 +140,12 @@ void Opcode8XY3(WORD opcode){
 
 // Adds VY to VX. VF is set to 1 when there's a carry, and to 0 when there isn't.
 void Opcode8XY4(WORD opcode){
-    m_Registers[(opcode & 0xF00)>>8] += m_Registers[(opcode & 0X0F0)>>4];
-    if ((int)m_Registers[(opcode & 0xF00)>>8] + (int)m_Registers[(opcode & 0X0F0)>>4] > 255){
-        m_Registers[0xF] = 1;
-    }
+    int x = opcode & 0xF00; x >>= 8;
+    int y = opcode & 0x0F0; y >>= 4;
+    int sum = m_Registers[x] + m_Registers[y];
+    if (sum > 255) m_Registers[0xF] = 1;
+    else m_Registers[0xF] = 0;
+    m_Registers[x] = sum & 0xFF;
 }
 
 // VY is subtracted from VX. VF is set to 0 when there's a borrow, and 1 when there isn't.
@@ -125,8 +155,8 @@ void Opcode8XY5(WORD opcode){
     regx = regx >> 8 ; // shift x across
     int regy = opcode & 0x00F0 ; // mask off reg y
     regy = regy >> 4 ; // shift y across
-    int xval = m_Registers[regx] ;
-    int yval = m_Registers[regy] ;
+    BYTE xval = m_Registers[regx] ;
+    BYTE yval = m_Registers[regy] ;
     if (yval > xval) // if this is true will result in a value < 0
         m_Registers[0xF] = 0 ;
     m_Registers[regx] = xval-yval ;
@@ -134,23 +164,34 @@ void Opcode8XY5(WORD opcode){
 
 // Stores the least significant bit of VX in VF and then shifts VX to the right by 1.
 void Opcode8XY6(WORD opcode){
+    m_Registers[0xF] = m_Registers[(opcode & 0xF00)>>8]&1;
     m_Registers[(opcode & 0xF00)>>8] >>= 1;
 }
 
 
 // Sets VX to VY minus VX. VF is set to 0 when there's a borrow, and 1 when there isn't.
 void Opcode8XY7(WORD opcode){
-    m_Registers[(opcode & 0xF00)>>8] = m_Registers[(opcode & 0X0F0)>>4] - m_Registers[(opcode & 0xF00)>>8] ;
+    m_Registers[0xF] = 1;
+    int regx = opcode & 0x0F00 ; // mask off reg x
+    regx = regx >> 8 ; // shift x across
+    int regy = opcode & 0x00F0 ; // mask off reg y
+    regy = regy >> 4 ; // shift y across
+    BYTE xval = m_Registers[regx] ;
+    BYTE yval = m_Registers[regy] ;
+    if (xval > yval) // if this is true will result in a value < 0
+        m_Registers[0xF] = 0 ;
+    m_Registers[regx] = yval-xval ;
 }
 
 // Stores the most significant bit of VX in VF and then shifts VX to the left by 1.
 void Opcode8XYE(WORD opcode){
-    m_Registers[(opcode & 0xF00)>>8] >>= 1;
+    m_Registers[0xF] = m_Registers[(opcode & 0xF00)>>8]>>7;
+    m_Registers[(opcode & 0xF00)>>8] <<= 1;
 }
 
 // Skips the next instruction if VX doesn't equal VY. (Usually the next instruction is a jump to skip a code block)
 void Opcode9XY0(WORD opcode){
-    if (m_Registers[(opcode & 0xF00)>>8] == m_Registers[(opcode & 0X0F0)>>4]) m_ProgramCounter+=2;
+    if (m_Registers[(opcode & 0xF00)>>8] != m_Registers[(opcode & 0X0F0)>>4]) m_ProgramCounter+=2;
 }
 
 // Sets I to the address NNN.
@@ -165,7 +206,7 @@ void OpcodeBNNN(WORD opcode){
 
 // Sets VX to the result of a bitwise and operation on a random number (Typically: 0 to 255) and NN.
 void OpcodeCXNN(WORD opcode){
-    m_Registers[(opcode & 0xF00) >> 8] = (rand())%256 + (opcode & 0x0FF);
+    m_Registers[(opcode & 0xF00) >> 8] = ((rand())) & (opcode & 0x0FF);
 }
 
 // Draws a sprite at coordinate (VX, VY) that has a width of 8 pixels and a height of N pixels.
@@ -190,6 +231,8 @@ void OpcodeDXYN(WORD opcode){
             if (data & mask){
                 int x = coordx + xpixel ; 
                 int y = coordy + yline ;
+                x %= HEIGHT;
+                y %= WIDTH;
                 if ( m_ScreenData[x][y] == 1){
                     m_Registers[0xF] = 1;
                 }
@@ -201,27 +244,43 @@ void OpcodeDXYN(WORD opcode){
 
 
 void OpcodeEX9E(WORD opcode){
-    ;
+    int regx = opcode & 0xF00;
+    regx >>= 8;
+    if (m_KeysPressed[m_Registers[regx]] == 1) m_ProgramCounter += 2;
 }
 
 void OpcodeEXA1(WORD opcode){
-    ;
+    int regx = opcode & 0xF00;
+    regx >>= 8;
+    if (m_KeysPressed[m_Registers[regx]] == 0) m_ProgramCounter += 2;
 }
 
 void OpcodeFX07(WORD opcode){
-    ;
+    int regx = opcode & 0xF00;
+    regx >>= 8;
+    m_Registers[regx] = m_DelayTimer;
 }
 
 void OpcodeFX0A(WORD opcode){
-    ;
+    int regx = opcode & 0xF00;
+    regx >>= 8;
+    int keypressed = 0;
+    for (int i = 0 ; i < 16 ; i++){
+        if (m_KeysPressed[i] == 1){
+            m_Registers[regx] = m_keyMappings[i];
+            keypressed = 1;
+        }
+    }
+    SDL_Delay(1000/FPS);
+    if (keypressed == 0) m_ProgramCounter -= 2;
 }
 
 void OpcodeFX15(WORD opcode){
-    ;
+    m_DelayTimer = m_Registers[(opcode & 0xF00)>>8];
 }
 
 void OpcodeFX18(WORD opcode){
-    ;
+    m_SoundTimer = m_Registers[(opcode & 0xF00)>>8];
 }
 
 
@@ -260,9 +319,10 @@ void OpcodeFX55(WORD opcode){
     int regx = opcode & 0xF00;
     regx >>= 8;
     int tmp_addressI = m_AddressI;
-    for (int i = 0 ; i<regx ; i++){
+    for (int i = 0 ; i<=regx ; i++){
         m_GameMemory[tmp_addressI++] = m_Registers[i];
     }
+    // m_AddressI = tmp_addressI;
 }
 
 // Fills V0 to VX (including VX) with values from memory starting at address I. The offset from I is increased by 1 for each value written,
@@ -270,24 +330,56 @@ void OpcodeFX65(WORD opcode){
     int regx = opcode & 0xF00;
     regx >>= 8;
     int tmp_addressI = m_AddressI;
-    for (int i = 0 ; i<regx ; i++){
+    for (int i = 0 ; i<=regx ; i++){
         m_Registers[i] = m_GameMemory[tmp_addressI++];
     }
+    // m_AddressI = tmp_addressI;
 }
 
 ////////////////////////// OPCODES END //////////////////////////
 
 // resets the CPU
 void CPUReset(char *filename){
+    ProgramRunning = true;
+
     m_AddressI = 0;
     m_ProgramCounter = 0x200;
     memset(m_Registers, 0, sizeof(m_Registers)); // reset the registers to 0.
+
+    // fontset loading
+    BYTE fontset[80] = {
+        0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+        0x20, 0x60, 0x20, 0x20, 0x70, // 1
+        0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+        0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+        0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+        0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+        0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+        0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+        0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+        0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+        0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+        0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+        0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+        0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+        0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+        0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+    };
+
+    for (int i = 0 ; i<80 ; i++){
+        m_GameMemory[i] = fontset[i];
+    }
 
     // load in the game
     FILE *in;
     in = fopen(filename, "rb");
     fread(&m_GameMemory[0x200], 0xfff, 1, in);
     fclose(in);
+
+    // reset the keys
+    for (int i = 0 ; i<16 ; i++){
+        m_KeysPressed[i] = false;
+    }
 }
 
 // returns the next opcode that is in memory
@@ -316,10 +408,75 @@ void display_screen(){
     system("clear");
 }
 
+void loadSurfaceFromMatrix(){
+	int bytes_per_pixel = screenSurface->format->BytesPerPixel;
 
-void RunEmulator(char* filename){
+	for (int y = 0 ; y<WIDTH * SCALE; y++){
+		for (int x = 0 ; x<HEIGHT * SCALE ; x++){
+			Uint8* pixel = (Uint8 *)screenSurface->pixels + y*screenSurface->pitch + x*bytes_per_pixel;
+			*(Uint32 *)pixel = 0xFFF * m_ScreenData[x/SCALE][y/SCALE];
+		}	
+	}
+}
+
+void decreseTimer(){
+    printf("Timer thread started\n");
+    while (true){
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000/60));
+        if (m_DelayTimer > 0)
+            m_DelayTimer--;
+        if (m_SoundTimer > 0)
+            m_SoundTimer--;
+    }
+    printf("Timer thread exited\n");
+}
+
+void keyUpdate(){
+    printf("Key thread started\n");
+    while (ProgramRunning){
+        while (SDL_PollEvent(&e)){
+            if (e.type == SDL_QUIT){
+                SDL_DestroyWindow( window );
+                SDL_Quit();
+                ProgramRunning = false;
+                return ;
+            }
+            else if (e.type == SDL_KEYDOWN){
+                int key = e.key.keysym.sym;
+                if (key>='0' and key<='9'){
+                    m_KeysPressed[key-'0'] = true;
+                }
+                else if (key>='a' and key<='f'){
+                    m_KeysPressed[key-'a'+10] = true;
+                }
+            }
+            else if (e.type == SDL_KEYUP){
+                int key = e.key.keysym.sym;
+                if (key>='0' and key<='9'){
+                    m_KeysPressed[key-'0'] = false;
+                }
+                else if (key>='a' and key<='f'){
+                    m_KeysPressed[key-'a'+10] = false;
+                }
+            }
+        }
+    }
+    printf("Key thread exited\n");
+}
+
+
+void RunEmulator(char* filename){	
+    printf("Starting emulator\n");
+
     CPUReset(filename);
     int lsb = 0;
+
+    // start timer thread 
+    std::thread timer_thread(decreseTimer);
+
+    // key updating thread
+    std::thread key_update(keyUpdate);
+
     while (true){
         WORD opcode = GetNextOpcode();
         int msb = (opcode & 0xF000);
@@ -414,6 +571,9 @@ void RunEmulator(char* filename){
 
             case 0xD :
                 OpcodeDXYN(opcode);
+                loadSurfaceFromMatrix();
+                SDL_UpdateWindowSurface(window);
+                SDL_Delay(1000/FPS);
                 break;
             
             case 0xE : 
@@ -457,8 +617,10 @@ void RunEmulator(char* filename){
                 break;
                 
         }
-        display_screen();
+        // display_screen();
     }
+    ProgramRunning = false;
+    printf("Emulator exited\n");
 } 
 
 
@@ -468,6 +630,27 @@ int main(int argc , char** argv){
         std::cout << "Usage: ./chip8 <game_file>" << std::endl;
         return 0;
     }
+
+    if (SDL_Init(SDL_INIT_EVERYTHING)!=0){
+		printf( "SDL could not initialize! SDL_Error: %s\n", SDL_GetError() );
+		return 0;
+	}
+    window = SDL_CreateWindow("CHIP-8",
+										  SDL_WINDOWPOS_CENTERED,
+										  SDL_WINDOWPOS_CENTERED,
+                                          HEIGHT * SCALE,
+										  WIDTH * SCALE,
+										  SDL_WINDOW_SHOWN);
+    if (window == NULL){
+		printf( "Window could not be created! SDL_Error: %s\n", SDL_GetError() );
+		return 0 ;
+	}
+    screenSurface = SDL_GetWindowSurface( window );
+	SDL_FillRect( screenSurface, NULL, SDL_MapRGB( screenSurface->format, 0xFF, 0xFF, 0xFF));
+
     RunEmulator(argv[1]);
+
+    printf("Program exited successfully\n");
+
     return 0;
 }
