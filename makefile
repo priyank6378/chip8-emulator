@@ -1,7 +1,7 @@
 all: clean build 
 
 clean :
-	rm -f chip8
+	rm -f chip8 a.out
 
 build :
-	g++ chip8emu.cpp -o chip8
+	g++ src/chip8emu.cpp -lSDL2 -lSDL2_image -lm -o chip8
