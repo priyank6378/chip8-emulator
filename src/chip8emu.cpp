@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <thread>
+#include <atomic>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_timer.h>
@@ -28,7 +29,7 @@ bool m_KeysPressed[16];     // specifies if the key is pressed
 BYTE m_DelayTimer ; // 8-bit delay timer
 BYTE m_SoundTimer ; // 8-bit sound timer
 
-bool ProgramRunning = true;
+std::atomic<bool> ProgramRunning(true);
 
 BYTE m_keyMappings[16] = {
     'x' , '1' , '2' , '3' ,
@@ -414,19 +415,21 @@ void loadSurfaceFromMatrix(){
 	for (int y = 0 ; y<WIDTH * SCALE; y++){
 		for (int x = 0 ; x<HEIGHT * SCALE ; x++){
 			Uint8* pixel = (Uint8 *)screenSurface->pixels + y*screenSurface->pitch + x*bytes_per_pixel;
-			*(Uint32 *)pixel = 0xFFF * m_ScreenData[x/SCALE][y/SCALE];
+			*(Uint32 *)pixel = 0xFFFFFF * (bool)m_ScreenData[x/SCALE][y/SCALE];
 		}	
 	}
 }
 
 void decreseTimer(){
     printf("Timer thread started\n");
-    while (true){
+    while (ProgramRunning){
         std::this_thread::sleep_for(std::chrono::milliseconds(1000/60));
         if (m_DelayTimer > 0)
             m_DelayTimer--;
-        if (m_SoundTimer > 0)
+        if (m_SoundTimer > 0){
             m_SoundTimer--;
+            printf("sound timer: %d\n", m_SoundTimer);
+        }
     }
     printf("Timer thread exited\n");
 }
@@ -439,7 +442,6 @@ void keyUpdate(){
                 SDL_DestroyWindow( window );
                 SDL_Quit();
                 ProgramRunning = false;
-                return ;
             }
             else if (e.type == SDL_KEYDOWN){
                 int key = e.key.keysym.sym;
@@ -477,7 +479,7 @@ void RunEmulator(char* filename){
     // key updating thread
     std::thread key_update(keyUpdate);
 
-    while (true){
+    while (ProgramRunning){
         WORD opcode = GetNextOpcode();
         int msb = (opcode & 0xF000);
         msb >>= 12;
@@ -620,6 +622,8 @@ void RunEmulator(char* filename){
         // display_screen();
     }
     ProgramRunning = false;
+    timer_thread.join();
+    key_update.join();
     printf("Emulator exited\n");
 } 
 
