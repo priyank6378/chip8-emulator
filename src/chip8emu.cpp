@@ -7,11 +7,12 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_timer.h>
+#include <map>
 
 #define WIDTH   32
 #define HEIGHT  64
 #define SCALE   20
-#define FPS     100
+#define FPS     60
 
 typedef unsigned char BYTE;
 typedef unsigned short WORD;
@@ -26,8 +27,8 @@ WORD m_ProgramCounter ; // 16-bit program counter
 std::vector<WORD> m_stack ; // the 16-bit stack
 BYTE m_ScreenData[64][32] ; // 64x32 is the screen size
 bool m_KeysPressed[16];     // specifies if the key is pressed
-BYTE m_DelayTimer ; // 8-bit delay timer
-BYTE m_SoundTimer ; // 8-bit sound timer
+std::atomic<Uint8> m_DelayTimer(0) ; // 8-bit delay timer
+std::atomic<Uint8> m_SoundTimer(0) ; // 8-bit sound timer
 
 std::atomic<bool> ProgramRunning(true);
 
@@ -36,6 +37,13 @@ BYTE m_keyMappings[16] = {
     'q' , 'w' , 'e' , 'a' ,
     's' , 'd' , 'z' , 'c' ,
     '4' , 'r' , 'f' , 'v'
+};
+
+std::map<char,int> key_to_index = {
+    {'x',0}, {'1',1}, {'2',2}, {'3',3},
+    {'q',4}, {'w',5}, {'e',6}, {'a',7},
+    {'s',8}, {'d',9}, {'z',10}, {'c',11},
+    {'4',12}, {'r',13}, {'f',14}, {'v',15}
 };
 
 
@@ -243,7 +251,6 @@ void OpcodeDXYN(WORD opcode){
     }
 }
 
-
 void OpcodeEX9E(WORD opcode){
     int regx = opcode & 0xF00;
     regx >>= 8;
@@ -426,10 +433,6 @@ void decreseTimer(){
         std::this_thread::sleep_for(std::chrono::milliseconds(1000/60));
         if (m_DelayTimer > 0)
             m_DelayTimer--;
-        if (m_SoundTimer > 0){
-            m_SoundTimer--;
-            printf("sound timer: %d\n", m_SoundTimer);
-        }
     }
     printf("Timer thread exited\n");
 }
@@ -445,23 +448,14 @@ void keyUpdate(){
             }
             else if (e.type == SDL_KEYDOWN){
                 int key = e.key.keysym.sym;
-                if (key>='0' and key<='9'){
-                    m_KeysPressed[key-'0'] = true;
-                }
-                else if (key>='a' and key<='f'){
-                    m_KeysPressed[key-'a'+10] = true;
-                }
+                m_KeysPressed[key_to_index[key]] = true;
             }
             else if (e.type == SDL_KEYUP){
                 int key = e.key.keysym.sym;
-                if (key>='0' and key<='9'){
-                    m_KeysPressed[key-'0'] = false;
-                }
-                else if (key>='a' and key<='f'){
-                    m_KeysPressed[key-'a'+10] = false;
-                }
+                m_KeysPressed[key_to_index[key]] = false;
             }
         }
+        SDL_Delay(1000/FPS);
     }
     printf("Key thread exited\n");
 }
